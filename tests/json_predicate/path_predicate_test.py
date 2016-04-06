@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2016 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,415 +12,336 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=missing-docstring
+
+
+"""Tests the citest.json_predicate.path_predicate module."""
+
 
 import unittest
 
-from citest.base import JsonSnapshotHelper
-import citest.json_contract as jc
+from citest.json_predicate import (
+    PATH_SEP,
+    DONT_ENUMERATE_TERMINAL,
+    PathPredicate,
+    PathPredicateResultBuilder,
+    PathValue,
+    PathValueResult,
+    MissingPathError,
+    ValuePredicate
+    )
 
 
-_LETTER_ARRAY = ['a', 'b', 'c']
 _LETTER_DICT = {'a': 'A', 'b': 'B', 'z': 'Z'}
-_NUMBER_DICT = {'a': 1, 'b': 2, 'three': 3}
-_COMPOSITE_DICT = { 'letters': _LETTER_DICT, 'numbers': _NUMBER_DICT }
+_NUMBER_DICT = {'a' :1, 'b': 2, 'three': 3}
+_COMPOSITE_DICT = {'letters': _LETTER_DICT, 'numbers': _NUMBER_DICT}
 
 
-def _make_found(source, path_trace, pred, valid=True):
-  value = path_trace[len(path_trace) - 1].value if path_trace else source
-  path = '/'.join([elem.path for elem in path_trace])
-  if not path:
-    path = None
-  return jc.JsonFoundValueResult(path=path, source=source, value=value,
-                                 pred=pred, valid=valid, path_trace=path_trace)
+class TestEqualsPredicate(ValuePredicate):
+  """A simple 'Equals' predicate for testing purposes."""
+
+  @property
+  def operand(self):
+    return self.__operand
+
+  def __init__(self, operand):
+    self.__operand = operand
+
+  def __call__(self, value):
+    valid = value == self.__operand
+    return PathValueResult(pred=self, source=value, target_path='',
+                           path_value=PathValue('', value), valid=valid)
+
+  def __eq__(self, pred):
+    return self.__class__ == pred.__class__ and self.__operand == pred.operand
+
+  def __repr__(self):
+    return 'TestEqualsPredicate({0})'.format(self.__operand)
 
 
 class JsonPathPredicateTest(unittest.TestCase):
-  def assertEqual(self, expect, have, msg=''):
-    JsonSnapshotHelper.AssertExpectedValue(expect, have, msg)
+  def assertEqual(self, a, b, msg=''):
+    if not msg:
+      msg = 'EXPECTED\n{0!r}\nGOT\n{1!r}'.format(a, b)
+    super(JsonPathPredicateTest, self).assertEqual(a, b, msg)
 
-  def test_clone_type_mismatch_none_context(self):
-    result = jc.JsonTypeMismatchResult(list, dict, 'ORIGINAL')
-    path_trace=[jc.PathValue('some/path', 'ORIGINAL')]
+  def test_collect_from_dict_identity(self):
+    source = _LETTER_DICT
+    pred = PathPredicate('')
+    values = pred(source)
+
+    builder = PathPredicateResultBuilder(source, pred)
+    builder.add_result_candidate(
+        PathValue('', source),
+        PathValueResult(source=source, target_path='',
+                        path_value=PathValue('', source), valid=True))
+    self.assertEqual(builder.build(True), values)
+
+    self.assertEqual([PathValue('', source)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('/')
+    values = pred(source)
+    self.assertEqual([PathValue('', source)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_list_identity(self):
+    letters = ['A', 'B', 'C']
+    pred = PathPredicate('')
+    values = pred(letters)
+    self.assertEqual([PathValue('[0]', 'A'),
+                      PathValue('[1]', 'B'),
+                      PathValue('[2]', 'C')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate(DONT_ENUMERATE_TERMINAL)
+    values = pred(letters)
+    self.assertEqual([PathValue('', letters)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate(PATH_SEP)
+    values = pred(letters)
+    self.assertEqual([PathValue('[0]', 'A'),
+                      PathValue('[1]', 'B'),
+                      PathValue('[2]', 'C')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_dict_found(self):
+    # """Normal dictionary attribute lookup."""
+    source = _LETTER_DICT
+    pred = PathPredicate('a')
+    values = pred(source)
+    self.assertEqual([PathValue('a', 'A')], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('b')
+    values = pred(source)
+    self.assertEqual([PathValue('b', 'B')], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_dict_not_found(self):
+    # """Normal dictionary attribute lookup with missing attribute."""
+    source = _LETTER_DICT
+    pred = PathPredicate('Z')
+    values = pred(source)
+    self.assertEqual([], values.path_values)
+    self.assertEqual([MissingPathError(_LETTER_DICT, 'Z',
+                                       path_value=('', _LETTER_DICT))],
+                     values.path_failures)
+
+  def test_collect_from_nested_dict_found(self):
+    # """Nested dictionary attribute lookup."""
+    source = {'outer': {'inner': _LETTER_DICT}}
+    pred = PathPredicate(PATH_SEP.join(['outer', 'inner', 'a']))
+    values = pred(source)
+    self.assertEqual([PathValue(pred.path, 'A')], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate(PATH_SEP.join(['outer', 'inner', 'b']))
+    values = pred(source)
+    self.assertEqual([PathValue(pred.path, 'B')], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_nested_dict_not_found(self):
+    # """Nested dictionary attribute lookup with missing element."""
+    source = _LETTER_DICT
+    pred = PathPredicate(PATH_SEP.join(['a', 'b']))
+    values = pred(source)
+    self.assertEqual([], values.path_values)
     self.assertEqual(
-        jc.JsonTypeMismatchResult(list, dict, source='ACTUAL', path='some/path',
-                                  path_trace=path_trace),
-        result.clone_in_context('ACTUAL', 'some/path'))
+        [MissingPathError('A', 'b', path_value=PathValue('a', 'A'))],
+        values.path_failures)
 
-  def test_clone_type_mismatch_context(self):
-    result = jc.JsonTypeMismatchResult(
-        list, dict, source='ORIGINAL', path='inner/path')
-    new_path_trace = ['some/path', 'ORIGINAL']
+  def test_collect_from_list_found(self):
+    # """Ambiguous path passes through a list element."""
+    source = [_LETTER_DICT]
+    pred = PathPredicate('a')
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['[0]', 'a']), 'A')],
+                     values.path_values)
+    pred = PathPredicate('b')
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['[0]', 'b']), 'B')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_list_not_found(self):
+    # """Ambiguous path passes through a list element but cannot be resolved."""
+    source = [_LETTER_DICT]
+    pred = PathPredicate('Z')
+    values = pred(source)
+    self.assertEqual([], values.path_values)
     self.assertEqual(
-        jc.JsonTypeMismatchResult(
-            list, dict, source='ACTUAL', path='some/path/inner/path',
-            path_trace=[jc.PathValue('some/path', 'ORIGINAL')]),
-        result.clone_in_context('ACTUAL', 'some/path'))
+        [MissingPathError(
+            _LETTER_DICT, 'Z', path_value=PathValue('[0]', _LETTER_DICT))],
+        values.path_failures)
 
-  def test_clone_value_result_none_context(self):
-    pred = jc.STR_EQ('WANT')
-    result = jc.JsonFoundValueResult(valid=True, pred=pred, value='GOT')
+  def test_collect_plain_terminal_list(self):
+    # """Path to a value that is a list."""
+    source = {'a': [_LETTER_DICT]}
+    pred = PathPredicate('a' + DONT_ENUMERATE_TERMINAL)
+    values = pred(source)
+    self.assertEqual([PathValue('a', [_LETTER_DICT])], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate(PATH_SEP.join(['a', 'a']))
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['a[0]', 'a']), 'A')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_enumerated_terminal_list(self):
+    # """Enumerated path to a value that is a list."""
+    array = ['A', 'B', 'C']
+    source = {'a': array}
+    pred = PathPredicate('a' + PATH_SEP)
+    values = pred(source)
+    self.assertEqual([PathValue('a[0]', 'A'),
+                      PathValue('a[1]', 'B'),
+                      PathValue('a[2]', 'C')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('a')
+    values = pred(source)
+    self.assertEqual([PathValue('a[0]', 'A'),
+                      PathValue('a[1]', 'B'),
+                      PathValue('a[2]', 'C')],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+  def test_collect_from_list_with_index(self):
+    # """Path with explicit list indexes to traverse."""
+    source = [_LETTER_DICT, _NUMBER_DICT]
+    pred = PathPredicate('[0]')
+    values = pred(source)
+    self.assertEqual([PathValue('[0]', _LETTER_DICT)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('[1]')
+    values = pred(source)
+    self.assertEqual([PathValue('[1]', _NUMBER_DICT)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate(PATH_SEP.join(['[1]', 'a']))
+    values = pred(source)
+    self.assertEqual([PathValue('[1]/a', 1)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+
+  def test_collect_from_list_of_list_with_index(self):
+    # """Path with explicit list indexes to traverse through nested lists."""
+    upper = ['A', 'B', 'C']
+    lower = ['a', 'b', 'c']
+    letters = [upper, lower]
+    arabic = [1, 2, 3]
+    roman = ['i', 'ii', 'iii']
+    numbers = [arabic, roman]
+    source = [letters, numbers]
+
+    # By default, values that are lists get expanded (one level)
+    pred = PathPredicate('[1]')
+    values = pred(source)
+    self.assertEquals([PathValue('[1][0]', arabic),
+                       PathValue('[1][1]', roman)],
+                      values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    # If we dont want to expand, then decorate with DONT_ENUMERATE_TERMINAL.
+    pred = PathPredicate('[0]' + DONT_ENUMERATE_TERMINAL)
+    values = pred(source)
+    self.assertEqual([PathValue('[0]', letters)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('[1]' + DONT_ENUMERATE_TERMINAL)
+    values = pred(source)
+    self.assertEqual([PathValue('[1]', numbers)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    # Go out one more level
+    pred = PathPredicate('[1][0]' + DONT_ENUMERATE_TERMINAL)
+    values = pred(source)
+    self.assertEqual([PathValue('[1][0]', arabic)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    pred = PathPredicate('[1][0]')
+    values = pred(source)
+    self.assertEqual([PathValue('[1][0][0]', 1),
+                      PathValue('[1][0][1]', 2),
+                      PathValue('[1][0][2]', 3)],
+                     values.path_values)
+    self.assertEqual([], values.path_failures)
+
+    # Go all the way down.
+    pred = PathPredicate('[1][0][2]')
+    values = pred(source)
+    self.assertEqual([PathValue('[1][0][2]', 3)], values.path_values)
+    self.assertEqual([], values.path_failures)
+
+
+  def test_collect_from_nested_list_found(self):
+    # """Ambiguous path through nested lists."""
+    source = {'outer': [_LETTER_DICT, _NUMBER_DICT]}
+    pred = PathPredicate(PATH_SEP.join(['outer', 'a']))
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['outer[0]', 'a']), 'A'),
+                      PathValue(PATH_SEP.join(['outer[1]', 'a']), 1)],
+                     values.path_values)
+
+    pred = PathPredicate(PATH_SEP.join(['outer', 'z']))
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['outer[0]', 'z']), 'Z')],
+                     values.path_values)
     self.assertEqual(
-        jc.JsonFoundValueResult(
-            source='ACTUAL', path='some/path', pred=pred, value='GOT',
-            path_trace=[jc.PathValue('some/path', 'GOT')]),
-        result.clone_in_context('ACTUAL', 'some/path'))
+        [MissingPathError(
+            _NUMBER_DICT, 'z',
+            path_value=PathValue('outer[1]', _NUMBER_DICT))],
+        values.path_failures)
 
-  def test_clone_value_result_valid_context(self):
-    pred = jc.STR_EQ('WANT')
-    original_path_trace = [jc.PathValue('original/path', 'GOT')]
-    result = jc.JsonFoundValueResult(
-        valid=False, source='ORIGINAL', path='original/path',
-        pred=pred, value='GOT', path_trace=original_path_trace)
-    new_path_trace = ([jc.PathValue('some/other', 'ORIGINAL')]
-                      + original_path_trace)
+    pred = PathPredicate(PATH_SEP.join(['outer', 'three']))
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['outer[1]', 'three']), 3)],
+                     values.path_values)
     self.assertEqual(
-        jc.JsonFoundValueResult(
-            valid=False,
-            source='ACTUAL', path='some/other/original/path',
-            pred=pred, value='GOT', path_trace=new_path_trace),
-        result.clone_in_context('ACTUAL', 'some/other'))
+        [MissingPathError(
+            _LETTER_DICT, 'three',
+            path_value=PathValue('outer[0]', _LETTER_DICT))],
+        values.path_failures)
 
-  def test_path_found(self):
-    pred = jc.PathPredicate('outer/inner')
-    d = {'outer': {'inner': {'a': 'A', 'b':'B'}}}
-    expect = jc.JsonFoundValueResult(
-        valid=True, source=d, path='outer/inner', pred=None,
-        value={'a': 'A', 'b':'B'},
-        path_trace=[jc.PathValue('outer', d['outer']),
-                    jc.PathValue('inner', d['outer']['inner'])])
-    self.assertEqual(expect, pred(d))
-
-  def test_path_found_in_array(self):
-    pred = jc.PathPredicate('outer/inner/a')
-    d = {'outer': [{'middle': {'a': 'A', 'b':'B'}}, {'inner': {'a': 'A', 'b':'B'}}]}
-    expect = jc.JsonFoundValueResult(
-        valid=True, source=d, path='outer/inner/a', pred=None,
-        value='A',
-        path_trace=[jc.PathValue('outer', d['outer']),
-                    jc.PathValue('inner', d['outer'][1]['inner']),
-                    jc.PathValue('a', 'A')])
-    self.assertEqual(expect, pred(d))
-
-  def test_path_predicate_wrappers(self):
-    pred = jc.PathEqPredicate('parent/child', 'VALUE')
-    self.assertEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child2', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE2'))
-    self.assertNotEqual(pred, jc.PathContainsPredicate('parent/child', 'VALUE'))
-
-  def test_path_value_found_top(self):
-    pred = jc.PathEqPredicate('letters', _LETTER_DICT)
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
+  def test_collect_from_nested_list_not_found(self):
+    # """Path through nested lists that cannot be resolved."""
+    source = {'outer': [_LETTER_DICT, _NUMBER_DICT]}
+    pred = PathPredicate(PATH_SEP.join(['outer', 'X']))
+    values = pred(source)
+    self.assertEqual([], values.path_values)
     self.assertEqual(
-        _make_found(
-            _COMPOSITE_DICT, path_trace=[jc.PathValue('letters', _LETTER_DICT)],
-            pred=jc.DICT_EQ(_LETTER_DICT)),
-        result)
+        [MissingPathError(
+            _LETTER_DICT, 'X',
+            path_value=PathValue('outer[0]', _LETTER_DICT)),
+         MissingPathError(
+             _NUMBER_DICT, 'X',
+             path_value=PathValue('outer[1]', _NUMBER_DICT))],
+        values.path_failures)
 
-  def test_path_value_found_nested(self):
-    pred = jc.PathEqPredicate('letters/a', 'A')
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('A')),
-      result)
-
-  def test_path_value_not_found(self):
-    pred = jc.PathEqPredicate('letters/a', 'B')
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('B'),
-          valid=False),
-      result)
-
-  def test_path_contains(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters/b', 'B')(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters', {'b':'B'})(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'B'}})(container))
-
-    container = { 'parent': [ _LETTER_DICT, _NUMBER_DICT, _COMPOSITE_DICT ] }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/numbers', {'b':2})(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(jc.PathContainsPredicate('first/second/b', [5])(container))
-
-    jc.PathContainsPredicate('first/second', {'b': [5]})(container)
-
-  def test_path_elements_contain(self):
-    container = { 'parent': {'numbers':_NUMBER_DICT} }
-    self.assertTrue(
-       jc.PathElementsContainPredicate('parent', {'numbers':{'b':2}})(container))
-
-    container = { 'parent': {'array':_LETTER_ARRAY} }
-    self.assertTrue(
-        jc.PathElementsContainPredicate('parent/array', 'b')(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(
-        jc.PathElementsContainPredicate('first/second', {'b': 5})(container))
-
-  def test_path_does_not_contain(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    # We're going to ignore this, so will just let it accumulate.
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/a', 'B')(container))
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/X', 'X')(container))
-
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'b':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'X':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'X'}})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'X':'X'}})(container))
-
-  def test_predicate_without_path(self):
-    pred = jc.PathPredicate(None, jc.STR_EQ('X'))
-    result = pred('X')
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found('X', path_trace=[], pred=jc.STR_EQ('X'), valid=True), result)
-
-  def test_path_predicate_wrappers(self):
-    pred = jc.PathEqPredicate('parent/child', 'VALUE')
-    self.assertEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child2', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE2'))
-    self.assertNotEqual(pred, jc.PathContainsPredicate('parent/child', 'VALUE'))
-
-  def test_path_value_found_top(self):
-    pred = jc.PathEqPredicate('letters', _LETTER_DICT)
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
-    self.assertEqual(
-        _make_found(
-            _COMPOSITE_DICT, path_trace=[jc.PathValue('letters', _LETTER_DICT)],
-            pred=jc.DICT_EQ(_LETTER_DICT)),
-        result)
-
-  def test_path_value_found_nested(self):
-    pred = jc.PathEqPredicate('letters/a', 'A')
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('A')),
-      result)
-
-  def test_path_value_not_found(self):
-    pred = jc.PathEqPredicate('letters/a', 'B')
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('B'),
-          valid=False),
-      result)
-
-  def test_path_contains(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters/b', 'B')(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters', {'b':'B'})(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'B'}})(container))
-
-    container = { 'parent': [ _LETTER_DICT, _NUMBER_DICT, _COMPOSITE_DICT ] }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/numbers', {'b':2})(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(jc.PathContainsPredicate('first/second/b', [5])(container))
-
-    jc.PathContainsPredicate('first/second', {'b': [5]})(container)
-
-  def test_path_elements_contain(self):
-    container = { 'parent': {'numbers':_NUMBER_DICT} }
-    self.assertTrue(
-       jc.PathElementsContainPredicate('parent', {'numbers':{'b':2}})(container))
-
-    container = { 'parent': {'array':_LETTER_ARRAY} }
-    self.assertTrue(
-        jc.PathElementsContainPredicate('parent/array', 'b')(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(
-        jc.PathElementsContainPredicate('first/second', {'b': 5})(container))
-
-  def test_path_does_not_contain(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    # We're going to ignore this, so will just let it accumulate.
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/a', 'B')(container))
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/X', 'X')(container))
-
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'b':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'X':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'X'}})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'X':'X'}})(container))
-
-  def test_predicate_without_path(self):
-    pred = jc.PathPredicate(None, jc.STR_EQ('X'))
-    result = pred('X')
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found('X', path_trace=[], pred=jc.STR_EQ('X'), valid=True), result)
-
-
-  def test_path_predicate_wrappers(self):
-    pred = jc.PathEqPredicate('parent/child', 'VALUE')
-    self.assertEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child2', 'VALUE'))
-    self.assertNotEqual(pred, jc.PathEqPredicate('parent/child', 'VALUE2'))
-    self.assertNotEqual(pred, jc.PathContainsPredicate('parent/child', 'VALUE'))
-
-  def test_path_value_found_top(self):
-    pred = jc.PathEqPredicate('letters', _LETTER_DICT)
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
-    self.assertEqual(
-        _make_found(
-            _COMPOSITE_DICT, path_trace=[jc.PathValue('letters', _LETTER_DICT)],
-            pred=jc.DICT_EQ(_LETTER_DICT)),
-        result)
-
-  def test_path_value_found_nested(self):
-    pred = jc.PathEqPredicate('letters/a', 'A')
-    result = pred(_COMPOSITE_DICT)
-
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('A')),
-      result)
-
-  def test_path_value_not_found(self):
-    pred = jc.PathEqPredicate('letters/a', 'B')
-    result = pred(_COMPOSITE_DICT)
+  def test_collect_filter_good(self):
+    source = {'outer': [_LETTER_DICT, _NUMBER_DICT]}
+    filter_pred = TestEqualsPredicate(2)
+    pred = PathPredicate(PATH_SEP.join(['outer', 'b']), pred=filter_pred)
+    values = pred(source)
+    self.assertEqual([PathValue(PATH_SEP.join(['outer[1]', 'b']), 2)],
+                     values.path_values)
 
     self.assertEqual(
-      _make_found(
-          _COMPOSITE_DICT,
-          path_trace=[
-              jc.PathValue('letters', _LETTER_DICT),
-              jc.PathValue('a', 'A')],
-          pred=jc.STR_EQ('B'),
-          valid=False),
-      result)
+        [PathValueResult(pred=filter_pred, valid=False,
+                         source=source, target_path='outer/b',
+                         path_value=PathValue('outer[0]/b', 'B'))],
+        values.path_failures)
 
-  def test_path_contains(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters/b', 'B')(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/letters', {'b':'B'})(container))
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'B'}})(container))
-
-    container = { 'parent': [ _LETTER_DICT, _NUMBER_DICT, _COMPOSITE_DICT ] }
-
-    self.assertTrue(
-        jc.PathContainsPredicate('parent/numbers', {'b':2})(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(jc.PathContainsPredicate('first/second/b', [5])(container))
-
-    jc.PathContainsPredicate('first/second', {'b': [5]})(container)
-
-  def test_path_elements_contain(self):
-    container = { 'parent': {'numbers':_NUMBER_DICT} }
-    self.assertTrue(
-       jc.PathElementsContainPredicate('parent', {'numbers':{'b':2}})(container))
-
-    container = { 'parent': {'array':_LETTER_ARRAY} }
-    self.assertTrue(
-        jc.PathElementsContainPredicate('parent/array', 'b')(container))
-
-    container = {'first':[{'second': [{'a':[1, 2, 3], 'b':[4, 5, 6]} ]} ]}
-    self.assertTrue(
-        jc.PathElementsContainPredicate('first/second', {'b': 5})(container))
-
-  def test_path_does_not_contain(self):
-    container = { 'parent':_COMPOSITE_DICT }
-
-    # We're going to ignore this, so will just let it accumulate.
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/a', 'B')(container))
-    self.assertFalse(jc.PathContainsPredicate(
-        'parent/letters/X', 'X')(container))
-
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'b':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent/letters', {'X':'X'})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'b':'X'}})(container))
-    self.assertFalse(
-        jc.PathContainsPredicate('parent', {'letters':{'X':'X'}})(container))
-
-  def test_predicate_without_path(self):
-    pred = jc.PathPredicate(None, jc.STR_EQ('X'))
-    result = pred('X')
-    self.assertTrue(result)
-    self.assertEqual(
-      _make_found('X', path_trace=[], pred=jc.STR_EQ('X'), valid=True), result)
 
 if __name__ == '__main__':
+  # pylint: disable=invalid-name
   loader = unittest.TestLoader()
   suite = loader.loadTestsFromTestCase(JsonPathPredicateTest)
   unittest.TextTestRunner(verbosity=2).run(suite)

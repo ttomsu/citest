@@ -1,4 +1,4 @@
-# Copyright 2015 Google Inc. All Rights Reserved.
+# Copyright 2016 Google Inc. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,208 +12,242 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import path as path_module
+"""Implementation of PathPredicateResult and PathPredicateResultBuilder."""
+
+
+import collections
+from ..base import JsonSnapshotable
 from . import predicate
 
 
-class JsonPathResult(predicate.PredicateResult):
-  """Common base class for results whose subject is a field within a composite.
+class PathPredicateResultCandidate(
+    collections.namedtuple('PathPredicateResultCandidate',
+                           ['path_value', 'result']),
+    JsonSnapshotable):
+  """Holds a value matching the desired path with its filtering result."""
+  # pylint: disable=too-few-public-methods
 
-  Attributes:
-    path: A '/'-delimited path from the |source| to the field.
-    source: The outermost containing object that the |path| is relative to.
-    path_trace: The sequence of intermediate objects as the path is traversed
-      from the source.
-  """
+  def export_to_json_snapshot(self, snapshot, entity):
+    """Implements JsonSnapshotable interface."""
+    snapshot.edge_builder.make_output(
+        entity, 'Path Value', self.path_value)
+    snapshot.edge_builder.make_output(
+        entity, 'Justification', self.result)
 
-  @property
-  def path(self):
-    return self.__path
 
-  @property
-  def path_trace(self):
-    return self.__path_trace
+class PathPredicateResultBuilder(object):
+  """Builder for creating PathPredicateResult instances."""
 
   @property
   def source(self):
+    """The source the bound path predicate was applied to."""
     return self.__source
-
-  def export_to_json_snapshot(self, snapshot, entity):
-    builder = snapshot.edge_builder
-    builder.make_control(entity, 'Path', self.__path)
-    builder.make_input(entity, 'Source', self.__source, format='json')
-    builder.make_output(entity, 'Trace', self.__path_trace)
-    super(JsonPathResult, self).export_to_json_snapshot(snapshot, entity)
-
-  def clone_in_context(self, source, path=None, path_trace=None):
-    """Clone this instance, but treat the context as source/path instead.
-
-    Args:
-      source: The JSON object that |path| starts in.
-      path: The path to the start of our path, or None to keep ours as is.
-      path_trace: The path_trace to the start of our path, or None.
-
-    Returns:
-      A new instance of our class, but with source=|source|
-          and path=|path|+our path.
-    """
-    if path and not path_trace:
-      old_source = self.__source
-      path_trace = [path_module.PathValue(path, old_source)]
-    else:
-      path_trace = path_trace or []
-
-    return self._do_clone_in_context(
-        source, self.__add_outer_path(path), path_trace + self.__path_trace)
-
-  def _do_clone_in_context(self, source, final_path, final_path_trace):
-    return self.__class__(
-        source=source, path=final_path,
-        valid=self.valid, comment=self.comment, cause=self.cause,
-        path_trace=final_path_trace)
-
-  def __init__(self, source, path, valid,
-               comment=None, cause=None, path_trace=None):
-    super(JsonPathResult, self).__init__(valid, comment=comment, cause=cause)
-    self.__source = source
-    self.__path = path
-    self.__path_trace = path_trace or []
-
-  def __eq__(self, result):
-    return (super(JsonPathResult, self).__eq__(result)
-            and self.__path == result.path
-            and self.__source == result.source
-            and self.__path_trace == result.path_trace)
-
-  def __add_outer_path(self, path):
-    """Helper function to add outer context to our path when cloning it."""
-    if not path:
-      return self.__path
-    if not self.__path:
-      return path
-    return '{0}/{1}'.format(path, self.__path)
-
-
-class JsonFoundValueResult(JsonPathResult):
-  """Predicate result indicating that we found a value.
-
-  Attributes:
-    value: The value we found is a JSON compatible type.
-    pred: The ValuePredicate used to find the value.
-  """
-
-  @property
-  def value(self):
-    return self.__value
 
   @property
   def pred(self):
+    """The PathPredicate that generated the result."""
     return self.__pred
 
-  def export_to_json_snapshot(self, snapshot, entity):
-    snapshot.edge_builder.make_mechanism(entity, 'Predicate', self.__pred)
-    snapshot.edge_builder.make_input(entity, 'Value', self.__value,
-                                     format='json')
-    super(JsonFoundValueResult, self).export_to_json_snapshot(snapshot, entity)
+  def __init__(self, source, pred):
+    """Constructor.
 
-  def _do_clone_in_context(self, source, final_path, final_path_trace):
-    return self.__class__(
-        value=self.__value,
-        source=source, path=final_path, valid=self.valid,
-        comment=self.comment, pred=self.pred, cause=self.cause,
-        path_trace=final_path_trace)
-
-  def __init__(self, value,
-               source=None, path=None, valid=True,
-               comment=None, pred=None, cause=None, path_trace=None):
-    if source == None:
-      source = value
-    if not path_trace and path:
-      path_trace = [path_module.PathValue(path, source)]
-
-    super(JsonFoundValueResult, self).__init__(
-        source, path, valid,
-        comment=comment, cause=cause, path_trace=path_trace)
+    Args:
+      source: [obj] The JSON object used to collect the values.
+      pred: [ValuePredicate] The predicate used to gather the results.
+    """
+    self.__source = source
     self.__pred = pred
-    self.__value = value
+    self.__path_values = []
+    self.__path_failures = []
+    self.__invalid_candidates = []
+    self.__valid_candidates = []
+
+  def add_all_path_failures(self, failures):
+    """Adds to the list of failed results.
+
+    Args:
+      failures: [list of PredicateResult] Explains reason paths were
+          omitted before we reached the final candidates..
+    """
+    self.__path_failures.extend(failures)
+    return self
+
+  def add_path_failure(self, failure):
+    """Adds to the list of pruned paths.
+
+    Args:
+      failure: [PredicateResult] Explains the reason a path was pruned.
+    """
+    self.__path_failures.append(failure)
+    return self
+
+  def add_result_candidate(self, path_value, final_result):
+    """Adds to the list of collected values.
+
+    Args:
+      path_value: [PathValue] A value that meets the bound path criteria.
+      final_result: [ValueResult] The result from the bound predicate filter
+          that justifies whether the value is valid (meets the filter criteria)
+          or not.
+    """
+    candidate_result = PathPredicateResultCandidate(path_value, final_result)
+    if final_result:
+      self.__valid_candidates.append(candidate_result)
+      self.__path_values.append(path_value)
+    else:
+      self.__path_failures.append(final_result)
+      self.__invalid_candidates.append(candidate_result)
+    return self
+
+  def build(self, valid=None):
+    """Construct the result.
+
+    Returns:
+      PathPredicateResult
+    """
+    if valid is None:
+      valid = len(self.__path_values) > 0
+    return PathPredicateResult(
+        valid=valid, pred=self.__pred, source=self.__source,
+        path_failures=self.__path_failures,
+        valid_candidates=self.__valid_candidates,
+        invalid_candidates=self.__invalid_candidates)
+
+
+class HasPathPredicateResult(object):
+  """This is a hack in lieu of a more meaningful interface.
+
+  The purpose of this is to allow observation validators to
+  be able to access the actual observed objects as well as how
+  they complied with constraints. This is needed for certain types
+  of constraints. Rather than coming up with the right interface at
+  this time, we'll just mooch off the PathPredicateResult which is
+  the basis of extracting values from observations and of the
+  CardinalityPredicate for counting instances.
+  """
+  # pylint: disable=too-few-public-methods
+
+  @property
+  def path_predicate_result(self):
+    """A PathPredicateResult instance providing the applicable object values."""
+    raise NotImplementedError(self.__class__.__name__)
+
+
+class PathPredicateResult(predicate.PredicateResult, HasPathPredicateResult):
+  """Class containing results of collecting values at a path.
+
+  This contains both the values that were collected, as well as the
+  values encountered that could not be collected. The "bad" values may
+  not have had a complete path or may have failed a filtering predicate.
+  Either way, we remember them here for the sake of reporting to show
+  why these encountered values were not among those "good" values collected.
+
+  Future operations on the collected values, typically imply only the "good"
+  values.
+  """
+
+  @property
+  def path_predicate_result(self):
+    """Implements HasPathPredicateResult interface."""
+    return self
+
+  @property
+  def pred(self):
+    """The predicate used to filter values, if any."""
+    return self.__pred
+
+  @property
+  def path_values(self):
+    """The matching PathValue instances that were found."""
+    return self.__path_values
+
+  @property
+  def source(self):
+    """Returns the source collected from."""
+    return self.__source
+
+  @property
+  def values(self):
+    """A list of the value components of the matching PathValue list."""
+    return [value.value for value in self.__path_values]
+
+  @property
+  def path_failures(self):
+    """A list of PredicateResult for each path that did not lead to a value.
+
+    This list contains only the point of first failure for each potential
+    path node to explain why it was pruned.
+    """
+    return self.__path_failures
+
+  @property
+  def valid_candidates(self):
+    """List of PredicateResultCandidate justifying each good PathValue."""
+    return self.__valid_candidates
+
+  @property
+  def invalid_candidates(self):
+    """List of PredicateResultCandidate justifying each failed path.
+
+    This does not include the pruned paths, only the valid paths that
+    failed the bound predicate to filter values.
+    """
+    return self.__invalid_candidates
+
+  def __init__(self, valid, pred, source, path_failures=None,
+               valid_candidates=None, invalid_candidates=None):
+    """Constructor.
+
+    Args:
+      valid: [bool] Whether or not the result is valid.
+      pred: [ValuePredicate] The filtering predicate might be None.
+      source: [obj] The root JSON object that was traversed.
+      path_failures: [list of PredicateResult] The pruned paths.
+      valid_candidates: [list of PathPredicateResultCandidate]
+      invalid_candidates: [list of PathPredicateResultCandidate]
+    """
+    # pylint: disable=too-many-arguments
+    super(PathPredicateResult, self).__init__(valid)
+    self.__pred = pred
+    self.__source = source
+    self.__path_values = [candidate.path_value
+                          for candidate in valid_candidates]
+    self.__path_failures = path_failures or []
+    self.__invalid_candidates = invalid_candidates or []
+    self.__valid_candidates = valid_candidates or []
 
   def __eq__(self, result):
-    return (super(JsonFoundValueResult, self).__eq__(result)
+    """Specializes interface."""
+    return (super(PathPredicateResult, self).__eq__(result)
             and self.__pred == result.pred
-            and self.__value == result.value)
+            and self.__source == result.source
+            and self.__valid_candidates == result.valid_candidates
+            and self.__invalid_candidates == result.invalid_candidates
+            and self.__path_values == result.path_values
+            and self.__path_failures == result.path_failures)
+
+  def export_to_json_snapshot(self, snapshot, entity):
+    """Implements JsonSnapshotable interface."""
+    snapshot.edge_builder.make_mechanism(entity, 'Predicate', self.__pred)
+    snapshot.edge_builder.make_output(
+        entity, 'Path Values', self.__path_values)
+    snapshot.edge_builder.make_output(
+        entity, 'Pruned Paths', self.__path_failures)
+    snapshot.edge_builder.make_output(
+        entity, 'Rejected Values', self.__invalid_candidates)
+    snapshot.edge_builder.make_output(
+        entity, 'Value Justification', self.__valid_candidates)
 
   def __str__(self):
-    parts = ['value={0} pred={1}'.format(self.__value, self.__pred)]
-    if self.path:
-      parts.append('source={0!r} path={1!r}'.format(self.source, self.path))
-      parts.extend(['trace={0!r}'.format(self.path_trace)])
+    """Specializes interface."""
+    return '{0} #valid={1} #invalid={2} #pruned={3}'.format(
+        self.__class__.__name__,
+        len(self.valid_candidates), len(self.invalid_candidates),
+        len(self.path_failures))
 
-    parts.append('GOOD' if self.valid else 'BAD')
-    return ' '.join(parts)
-
-
-class JsonMissingPathResult(JsonPathResult):
-  """A PredicatePathResult indicating the desired path did not exist."""
-
-  def __init__(self, source, path, valid=False, comment=None, cause=None,
-               path_trace=None):
-    super(JsonMissingPathResult, self).__init__(
-        source=source, path=path, valid=valid, comment=comment, cause=cause,
-        path_trace=path_trace)
-
-
-class JsonTypeMismatchResult(JsonPathResult):
-  """A PredicatePathResult indicating the field was not the expected type."""
-
-  @property
-  def expect_type(self):
-    return self.__expect_type
-
-  @property
-  def got_type(self):
-    return self.__got_type
-
-  def _do_clone_in_context(self, source, final_path, final_path_trace):
-    return self.__class__(
-        expect_type=self.__expect_type, got_type=self.__got_type,
-        source=source, path=final_path, valid=self.valid,
-        comment=self.comment, cause=self.cause,
-        path_trace=final_path_trace)
-
-  def __init__(self, expect_type, got_type, source, path=None,
-               valid=False, comment=None, cause=None, path_trace=None):
-    super(JsonTypeMismatchResult, self).__init__(
-        source, path, valid, comment=comment, path_trace=path_trace)
-    self.__expect_type = expect_type
-    self.__got_type = got_type
-
-  def __str__(self):
-    return '{0} is not a {1} for field="{2}" trace={3}.'.format(
-        self.__got_type, self.__expect_type, self.path, self.path_trace)
-
-  def __eq__(self, error):
-    return (super(JsonTypeMismatchResult, self).__eq__(error)
-            and self.__got_type == error.got_type
-            and self.__expect_type == error.expect_type)
-
-
-class WrappedPathResult(JsonPathResult):
-  @property
-  def result(self):
-    return self.__result
-
-  def __init__(self, valid, result, source, path, path_trace=None):
-    super(WrappedPathResult, self).__init__(
-        valid=valid, source=source, path=path, path_trace=path_trace)
-    self.__result = result
-
-  def __eq__(self, result):
-    return (super(WrappedPathResult, self).__eq__(result)
-            and self.__result == result.result)
-
-  def __str__(self):
-    parts = ['path={0!r}'.format(self.path)]
-    if self.path_trace:
-      parts.extend(['trace={0!r}'.format(self.path_trace)])
-    parts.extend([' delegate={0!r}'.format(self.__result)])
-    return ' '.join(parts)
+  def __repr__(self):
+    """Specializes interface."""
+    return ('{0} pred={1} path_values={2} pruned={3} invalid={4} valid={5}'
+            .format(self.__class__.__name__, self.pred, self.path_values,
+                    self.path_failures,
+                    self.invalid_candidates, self.valid_candidates))
