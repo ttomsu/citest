@@ -39,19 +39,84 @@ from .predicate import (
     PredicateResult,
     ValuePredicate)
 
-from path_result import (
+from .path_result import (
     IndexBoundsError,
     MissingPathError,
     PathResult,
     PathValueResult,
     TypeMismatchError)
 
-from path_predicate_result import (
+from .path_predicate_result import (
     PathPredicateResult,
     PathPredicateResultBuilder,
     PathPredicateResultCandidate)
 
-from path_predicate import (
+from .path_predicate import (
     DONT_ENUMERATE_TERMINAL,
     PathPredicate)
 
+from .binary_predicate import (
+    BinaryPredicate,
+    ContainsPredicate,
+    DictSubsetPredicate,
+    DifferentPredicate,
+    EquivalentPredicate,
+    ListMembershipPredicate,
+    ListSubsetPredicate,
+    StandardBinaryPredicate,
+    StandardBinaryPredicateFactory,
+
+    CONTAINS,
+    DIFFERENT,
+    EQUIVALENT,
+
+    DICT_EQ,
+    DICT_NE,
+    DICT_SUBSET,
+    LIST_EQ,
+    LIST_MEMBER,
+    LIST_NE,
+    LIST_SIMILAR,
+    LIST_SUBSET,
+    NUM_LE,
+    NUM_GE,
+    NUM_EQ,
+    NUM_NE,
+    STR_SUBSTR,
+    STR_EQ,
+    STR_NE)
+
+from .path_predicate_helpers import (
+    PathContainsPredicate,
+    PathElementsContainPredicate,
+    PathEqPredicate)
+
+# The logic_predicate module adds and/or logic aggregation
+# to return composite results based on applying multiple predicates.
+from .logic_predicate import (
+    AND,
+    IF,
+    NOT,
+    OR,
+    ConditionalPredicate,
+    ConjunctivePredicate,
+    DisjunctivePredicate,
+    NegationPredicate)
+
+# The map_predicate module contains a mapper that maps a predicate over an
+# object list.
+from .map_predicate import (
+    MapPredicate,
+    MapPredicateResult,
+    MapPredicateResultBuilder,
+    ObjectResultMapAttempt)
+
+from .cardinality_predicate import (
+    CardinalityPredicate,
+    CardinalityResult,
+    ConfirmedCardinalityResult,
+
+    FailedCardinalityResult,
+    FailedCardinalityRangeResult,
+    MissingValueCardinalityResult,
+    UnexpectedValueCardinalityResult)

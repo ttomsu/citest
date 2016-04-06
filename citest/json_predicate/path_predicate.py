@@ -287,18 +287,20 @@ class PathPredicate(ValuePredicate, ProducesPathPredicateResult):
     if not path and not (enumerate_terminal and isinstance(source, list)):
       return self.__add_queue_to_builder(builder, queue, enumerate_terminal)
 
+    final_queue = []
     while queue:
-      if queue[0].path_offset >= len(path):
-        break
-
       top = queue.pop(0)
+      if top.path_offset >= len(path):
+        final_queue.append(top)
+        continue
+
       candidates, fails = _process_queue_element(top, path)
       queue.extend(candidates)
       builder.add_all_path_failures(fails)
 
-    return self.__add_queue_to_builder(builder, queue, enumerate_terminal)
+    return self.__add_queue_to_builder(builder, final_queue, enumerate_terminal)
 
-  def __add_queue_to_builder(self, builder, queue, enumerate_terminal):
+  def __add_queue_to_builder(self, builder, final_queue, enumerate_terminal):
     """Helper method for processing the final candidates from the queue.
 
     Apply the filter bound to this predicate, if any, to determine whether
@@ -306,14 +308,14 @@ class PathPredicate(ValuePredicate, ProducesPathPredicateResult):
 
     Args:
       builder: [PathPredicateResultBuilder] To add the results into.
-      queue: [list of _QueueElement] The final candidate values.
+      final_queue: [list of _QueueElement] The final candidate values.
       enumerate_terminal: [bool] If true, then list values in the queue
          should be enumerated (one level) into individual elements.
 
     Returns:
       PathPredicateResult
     """
-    for elem in queue:
+    for elem in final_queue:
       value = elem.path_value.value
       if enumerate_terminal and isinstance(value, list):
         candidates, fails = _process_queue_element(elem, self.__path)
