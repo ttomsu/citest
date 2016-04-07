@@ -22,6 +22,8 @@ operations to see if their values are consistent with expectations.
 # pylint: disable=relative-import
 
 
+from .json_error import JsonError
+
 # This module is intended to support the higher level json_predicate.* modules.
 # To that end, the lookups populate PredicateResult objects rather than just
 # returning values, so are heavier weight that would be otherwise.
